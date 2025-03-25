@@ -1,0 +1,92 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:  # Allow manual triggering
+
+env:
+  IMAGE_NAME: myapplication
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Needed for version commit
+      packages: write  # Needed for ghcr.io push
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Get full history for versioning
+
+      - name: Set up JDK
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'maven'
+
+      - name: Generate version number
+        id: versioning
+        run: |
+          # Get latest tag or use 1.0.0 if none exists
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")
+          echo "Latest tag: $LATEST_TAG"
+          
+          # Remove 'v' prefix if present
+          CURRENT_VERSION=${LATEST_TAG#v}
+          
+          # Split and increment patch version
+          IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
+          NEW_PATCH=$((patch + 1))
+          NEW_VERSION="$major.$minor.$NEW_PATCH"
+          echo "New version: $NEW_VERSION"
+          
+          # Set output for later use
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          
+          # Create and push new tag
+          git config --global user.name 'GitHub Actions'
+          git config --global user.email 'actions@github.com'
+          git tag -a "v$NEW_VERSION" -m "Release v$NEW_VERSION"
+          git push origin "v$NEW_VERSION"
+
+      - name: Build application
+        run: mvn -B package --file pom.xml
+
+      - name: Create multi-stage Dockerfile
+        run: |
+          cat > Dockerfile << 'EOF'
+          # Stage 1: Build the application
+          FROM maven:3.8.6-openjdk-17 AS build
+          WORKDIR /app
+          COPY pom.xml .
+          COPY src ./src
+          RUN mvn clean package -DskipTests
+
+          # Stage 2: Runtime image
+          FROM openjdk:17-jdk-slim
+          WORKDIR /app
+          COPY --from=build /app/target/*.jar app.jar
+          EXPOSE 8080
+          ENTRYPOINT ["java", "-jar", "app.jar"]
+          EOF
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.versioning.outputs.version }}
