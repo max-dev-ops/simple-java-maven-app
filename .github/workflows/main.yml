@@ -20,6 +20,19 @@ jobs:
         uses: actions/checkout@v3
         with:
           fetch-depth: 0  # Get full history for versioning
+          
+      - name: Cleanup workspace and Docker
+        run: |
+          echo "Cleaning up workspace..."
+          git clean -fdx
+          
+          echo "Pruning Docker resources..."
+          docker system prune -af --volumes || true
+          
+          echo "Removing any previous build artifacts..."
+          rm -rf target/ Dockerfile || true
+          
+          echo "Cleanup complete."
 
       - name: Set up JDK
         uses: actions/setup-java@v3
@@ -61,18 +74,34 @@ jobs:
         run: |
           cat > Dockerfile << 'EOF'
           # Stage 1: Build the application
-          FROM maven:3.9-eclipse-temurin-17 AS build
+          FROM maven:3.9-eclipse-temurin-17-slim AS build
           WORKDIR /app
           COPY pom.xml .
+          # Download dependencies separately to leverage Docker cache
+          RUN mvn dependency:go-offline
+          
           COPY src ./src
           RUN mvn clean package -DskipTests
+          
+          # Optional: Extract the JAR to optimize layers
+          RUN mkdir -p extracted && java -Djarmode=layertools -jar target/*.jar extract --destination extracted
 
-          # Stage 2: Runtime image
-          FROM eclipse-temurin:17-jdk-jammy
+          # Stage 2: Runtime image - using much smaller JRE Alpine image
+          FROM eclipse-temurin:17-jre-alpine
           WORKDIR /app
-          COPY --from=build /app/target/*.jar app.jar
+          
+          # Create a non-root user to run the application
+          RUN addgroup --system javauser && adduser --system --ingroup javauser javauser
+          USER javauser
+          
+          # Copy the built JAR by layers to optimize image size and caching
+          COPY --from=build --chown=javauser:javauser /app/extracted/dependencies/ ./
+          COPY --from=build --chown=javauser:javauser /app/extracted/spring-boot-loader/ ./
+          COPY --from=build --chown=javauser:javauser /app/extracted/snapshot-dependencies/ ./
+          COPY --from=build --chown=javauser:javauser /app/extracted/application/ ./
+          
           EXPOSE 8080
-          ENTRYPOINT ["java", "-jar", "app.jar"]
+          ENTRYPOINT ["java", "org.springframework.boot.loader.JarLauncher"]
           EOF
 
       - name: Login to GitHub Container Registry
