@@ -43,6 +43,32 @@ jobs:
       - name: Print Version
         run: "echo 'New Version: ${{steps.bump.outputs.version}}'"
 
+      - name: Extract Git metadata for tagging
+        id: git-metadata
+        run: |
+          echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+          echo "branch=${GITHUB_REF#refs/heads/}" >> $GITHUB_OUTPUT
+
+      - name: Prepare Docker tags
+        id: docker-tags
+        run: |
+          # Always include these tags
+          TAGS="ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest"
+          TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.git-metadata.outputs.sha_short }}"
+          TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.git-metadata.outputs.date }}"
+
+          # Add version tag if version was bumped (check if version exists and is not empty)
+          if [ -n "${{ steps.bump.outputs.version }}" ]; then
+            TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.bump.outputs.version }}"
+            echo "Version tag added: ${{ steps.bump.outputs.version }}"
+          else
+            echo "No version change detected, skipping version tag"
+          fi
+
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+          echo "All tags: $TAGS"
+
       - name: Set up JDK
         uses: actions/setup-java@v3
         with:
@@ -122,6 +148,4 @@ jobs:
         with:
           context: .
           push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest
-            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.versioning.outputs.version }}
+          tags: ${{ steps.docker-tags.outputs.tags }}
