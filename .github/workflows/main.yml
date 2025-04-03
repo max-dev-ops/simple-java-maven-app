@@ -56,8 +56,29 @@ jobs:
           cache: "maven"
           
       - name: Dependency scanning
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
         run: |
-          mvn org.owasp:dependency-check-maven:check
+          # Create OWASP dependency check settings with NVD API key
+          mkdir -p ~/.m2
+          cat > ~/.m2/settings.xml << EOF
+          <settings>
+            <profiles>
+              <profile>
+                <id>owasp-dependency-check</id>
+                <activation>
+                  <activeByDefault>true</activeByDefault>
+                </activation>
+                <properties>
+                  <nvd.api.key>${NVD_API_KEY}</nvd.api.key>
+                </properties>
+              </profile>
+            </profiles>
+          </settings>
+          EOF
+          
+          echo "Running OWASP dependency check with NVD API key..."
+          mvn org.owasp:dependency-check-maven:check -Dformat=XML
         
       - name: Check for critical vulnerabilities
         run: |
