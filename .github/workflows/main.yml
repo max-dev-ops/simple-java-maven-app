@@ -21,19 +21,6 @@ jobs:
         with:
           fetch-depth: 0 # Get full history for versioning
 
-      - name: Cleanup workspace and Docker
-        run: |
-          echo "Cleaning up workspace..."
-          git clean -fdx
-
-          echo "Pruning Docker resources..."
-          docker system prune -af --volumes || true
-
-          echo "Removing any previous build artifacts..."
-          rm -rf target/ Dockerfile || true
-
-          echo "Cleanup complete."
-
       - name: Bump Version
         id: bump
         uses: nnichols/maven-version-bump-action@v3
@@ -84,6 +71,17 @@ jobs:
 
       - name: Build application
         run: mvn -B package --file pom.xml
+
+      - name: Set up Node 14
+        uses: actions/setup-node@v3
+        with:
+          node-version: 14
+      - name: install Snyk CLI
+        run: npm install -g snyk
+      - name: run Snyk Open Source Test
+        run: snyk test
+      - name: run Snyk Code Test
+        run: snyk code test
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v2
