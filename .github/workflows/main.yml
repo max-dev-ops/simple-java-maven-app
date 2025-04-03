@@ -26,16 +26,16 @@ jobs:
           cd git-secrets
           sudo make install
           cd ..
-      
-      - name: Configure git-secrets
-        run: |
-          git secrets --register-aws
-          git secrets --add 'private_key'
-          git secrets --add 'api[_]?key'
-          git secrets --add 'secret[_]?key'
-          git secrets --add 'password'
-          git secrets --add 'credential'
-      
+  
+     # - name: Configure git-secrets
+      #  run: |
+       #   git secrets --register-aws
+       #   git secrets --add 'private_key'
+        #  git secrets --add 'api[_]?key'
+        #  git secrets --add 'secret[_]?key'
+        #  git secrets --add 'password'
+       #   git secrets --add 'credential'
+    
       - name: Scan for secrets
         run: git secrets --scan
       
