@@ -9,7 +9,7 @@ env:
   IMAGE_NAME: myapplication
 
 jobs:
-  build-and-deploy:
+  build-test-deploy:
     runs-on: ubuntu-latest
     permissions:
       contents: write # Needed for version commit
@@ -21,6 +21,13 @@ jobs:
         with:
           fetch-depth: 0 # Get full history for versioning
 
+      - name: Set up JDK
+        uses: actions/setup-java@v3
+        with:
+          distribution: "temurin"
+          java-version: "17"
+          cache: "maven"
+
       - name: Bump Version
         id: bump
         uses: nnichols/maven-version-bump-action@v3
@@ -30,6 +37,14 @@ jobs:
       - name: Print Version
         run: "echo 'New Version: ${{steps.bump.outputs.version}}'"
 
+      - name: Build application
+        run: mvn -B package --file pom.xml
+        
+      - name: Run Snyk security scan
+        uses: snyk/actions/maven@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          
       - name: Extract Git metadata for tagging
         id: git-metadata
         shell: bash
