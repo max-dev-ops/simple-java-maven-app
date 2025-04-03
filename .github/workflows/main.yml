@@ -3,86 +3,49 @@ name: CI/CD Pipeline
 on:
   push:
     branches: [master]
-  pull_request:
-    branches: [master]
   workflow_dispatch: # Allow manual triggering
 
 env:
   IMAGE_NAME: myapplication
-  # Set security thresholds
-  CRITICAL_VULNERABILITIES_THRESHOLD: 0
-  HIGH_VULNERABILITIES_THRESHOLD: 0
 
 jobs:
   security-checks:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0 # Get full history for versioning
-      
-      - name: Secret Scanning
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
-        
-      - name: Run manual secret scan
+      - uses: actions/checkout@v3
+
+      - name: Install git-secrets
         run: |
-          # Use a direct approach rather than pre-commit hooks in CI
-          echo "Running manual secret scanning..."
-          
-          # Install detect-secrets if needed for scanning
-          pip install detect-secrets
-          
-          # Scan all files in the repository
-          detect-secrets scan > secrets.json
-          
-          # Check if secrets were found
-          if [ "$(grep -c "HIGH_ENTROPY" secrets.json || echo 0)" -gt 0 ]; then
-            echo "Potential secrets found in the codebase!"
-            cat secrets.json
-            exit 1
-          else
-            echo "No secrets detected."
-          fi
-          
-      - name: Set up JDK
-        uses: actions/setup-java@v3
+          git clone https://github.com/awslabs/git-secrets.git
+          cd git-secrets
+          sudo make install
+          git secrets --install
+          git secrets --register-aws
+
+      - name: Run git-secrets
+        run: git secrets --scan-history
+
+      - name: OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
         with:
-          distribution: "temurin"
-          java-version: "17"
-          cache: "maven"
-          
-      - name: Setup Snyk
-        uses: snyk/actions/setup@master
-          
-      - name: Snyk Maven dependency scan
-        run: snyk test --all-projects --severity-threshold=high
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        continue-on-error: false  # Fail the build if vulnerabilities are found
-          
-      - name: Snyk Maven monitor
-        run: snyk monitor --all-projects
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-          
-      - name: Scan Dockerfile
+          project: 'simple-java-maven-app'
+          path: '.'
+          format: 'HTML'
+          failOnCVSS: 7
+
+      - name: Run Trivy vulnerability scanner on Dockerfile
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'config'
           scan-ref: 'Dockerfile'
-          format: 'table'
           exit-code: '1'
-          ignore-unfixed: true
           severity: 'CRITICAL,HIGH'
-          
-      - name: Static code analysis
-        if: github.event_name == 'pull_request' && github.base_ref == 'master'
+
+      - name: Static code analysis with PMD
         run: |
-          mvn spotbugs:check pmd:check
+          wget https://github.com/pmd/pmd/releases/download/pmd_releases%2F6.55.0/pmd-bin-6.55.0.zip
+          unzip pmd-bin-6.55.0.zip
+          ./pmd-bin-6.55.0/bin/pmd check -d src/main/java -R rulesets/java/quickstart.xml -f text
 
   build-and-deploy:
     needs: security-checks
@@ -90,7 +53,7 @@ jobs:
     permissions:
       contents: write # Needed for version commit
       packages: write # Needed for ghcr.io push
-      id-token: write # Needed for signing
+      id-token: write # needed for signing
 
     steps:
       - name: Checkout code
@@ -226,53 +189,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@main
-
       - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
           context: .
           push: true
           tags: ${{ steps.docker-tags.outputs.tags }}
-          
-      - name: Scan built container image
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@main
+
+      - name: Sign the Docker image
+        run: |
+          cosign sign --yes ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.git-metadata.outputs.sha_short }}
+
+      - name: Verify Docker image
+        run: |
+          cosign verify ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.git-metadata.outputs.sha_short }}
+
+      - name: Scan container for vulnerabilities
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ format('ghcr.io/{0}/{1}:{2}', github.repository_owner, env.IMAGE_NAME, steps.git-metadata.outputs.sha_short) }}
+          image-ref: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.git-metadata.outputs.sha_short }}
           format: 'table'
           exit-code: '1'
-          ignore-unfixed: true
           severity: 'CRITICAL,HIGH'
-          
-      - name: Sign container image
-        run: |
-          cosign sign --key env://COSIGN_PRIVATE_KEY ${{ format('ghcr.io/{0}/{1}:{2}', github.repository_owner, env.IMAGE_NAME, steps.git-metadata.outputs.sha_short) }}
-        env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-
-  deploy:
-    needs: build-and-deploy
-    runs-on: ubuntu-latest
-    environment: production
-    permissions:
-      contents: read
-      packages: read
-      id-token: write
-    
-    steps:
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@main
-        
-      - name: Verify container signature
-        run: |
-          cosign verify --key env://COSIGN_PUBLIC_KEY ${{ format('ghcr.io/{0}/{1}:{2}', github.repository_owner, env.IMAGE_NAME, needs.build-and-deploy.outputs.sha_short) }}
-        env:
-          COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
-          
-      - name: Deploy application
-        run: |
-          echo "Deploying application..."
-          # Add your deployment commands here
-          echo "Application deployed successfully!"
