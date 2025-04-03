@@ -28,35 +28,25 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
         
-      - name: Setup pre-commit hooks
+      - name: Run manual secret scan
         run: |
-          pip install pre-commit
+          # Use a direct approach rather than pre-commit hooks in CI
+          echo "Running manual secret scanning..."
           
-          # Create pre-commit config file in the repository root
-          cat > .pre-commit-config.yaml << 'EOF'
-          repos:
-          -   repo: https://github.com/pre-commit/pre-commit-hooks
-              rev: v4.4.0
-              hooks:
-              -   id: trailing-whitespace
-              -   id: end-of-file-fixer
-              -   id: check-yaml
-              -   id: check-added-large-files
-
-          -   repo: https://github.com/gitleaks/gitleaks
-              rev: v8.16.1
-              hooks:
-              -   id: gitleaks
-
-          -   repo: https://github.com/zricethezav/detect-secrets
-              rev: v1.4.0
-              hooks:
-              -   id: detect-secrets
-          EOF
+          # Install detect-secrets if needed for scanning
+          pip install detect-secrets
           
-          # Now install the hooks
-          pre-commit install --install-hooks
-          echo "Pre-commit hooks installed for local development"
+          # Scan all files in the repository
+          detect-secrets scan > secrets.json
+          
+          # Check if secrets were found
+          if [ "$(grep -c "HIGH_ENTROPY" secrets.json || echo 0)" -gt 0 ]; then
+            echo "Potential secrets found in the codebase!"
+            cat secrets.json
+            exit 1
+          else
+            echo "No secrets detected."
+          fi
           
       - name: Set up JDK
         uses: actions/setup-java@v3
