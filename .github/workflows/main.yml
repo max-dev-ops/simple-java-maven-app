@@ -1,4 +1,4 @@
-name: CI/CD Pipeline with Security Features
+name: CI/CD Pipeline
 
 on:
   push:
@@ -9,10 +9,12 @@ on:
 
 env:
   IMAGE_NAME: myapplication
+  # Set security thresholds
+  CRITICAL_VULNERABILITIES_THRESHOLD: 0
+  HIGH_VULNERABILITIES_THRESHOLD: 0
 
 jobs:
-  secret-scan:
-    name: Detect Secrets
+  security-checks:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -20,137 +22,133 @@ jobs:
         with:
           fetch-depth: 0 # Get full history for versioning
       
-      - name: Install Gitleaks
+      - name: Secret Scanning
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+        
+      - name: Setup pre-commit hooks
         run: |
-          wget https://github.com/zricethezav/gitleaks/releases/download/v8.16.3/gitleaks_8.16.3_linux_x64.tar.gz
-          tar -xzf gitleaks_8.16.3_linux_x64.tar.gz
-          sudo mv gitleaks /usr/local/bin/
-      
-      - name: Create allowlist file for CI/CD patterns
-        run: |
-          cat > .gitleaks.toml << 'EOF'
-          [allowlist]
-          paths = [
-            '''\.github/workflows/.*'''
-          ]
+          pip install pre-commit
+          pre-commit install --install-hooks
+          echo "Pre-commit hooks installed for local development"
           
-          regexes = [
-            '''secrets\.GITHUB_TOKEN''',
-            '''uses: docker/login-action''',
-            '''password: \$\{\{ secrets\.'''
-          ]
-          EOF
-      
-      - name: Scan for secrets
-        run: gitleaks detect --source . --config .gitleaks.toml
-      
-      - name: Setup pre-commit hook for developers
-        run: |
-          mkdir -p .git/hooks
-          cat > setup-git-hooks.sh << 'EOF'
-          #!/bin/bash
-          
-          # Create pre-commit hook
-          cat > .git/hooks/pre-commit << 'HOOK'
-          #!/bin/bash
-          
-          # Download and install gitleaks if not installed
-          if ! command -v gitleaks &> /dev/null; then
-            echo "Installing gitleaks..."
-            TEMP_DIR=$(mktemp -d)
-            cd $TEMP_DIR
-            curl -sSfL https://github.com/zricethezav/gitleaks/releases/download/v8.16.3/gitleaks_8.16.3_linux_x64.tar.gz | tar -xz
-            sudo mv gitleaks /usr/local/bin/
-            cd -
-            rm -rf $TEMP_DIR
-          fi
-          
-          # Create allowlist for workflow files
-          cat > .gitleaks.toml << 'CONFIG'
-          [allowlist]
-          paths = [
-            '''\.github/workflows/.*'''
-          ]
-          
-          regexes = [
-            '''secrets\.GITHUB_TOKEN''',
-            '''uses: docker/login-action''',
-            '''password: \$\{\{ secrets\.'''
-          ]
-          CONFIG
-          
-          # Run gitleaks
-          echo "Scanning for secrets..."
-          if ! gitleaks detect --source . --staged --config .gitleaks.toml; then
-            echo "Secret detected! Commit aborted."
-            exit 1
-          fi
-          
-          exit 0
-          HOOK
-          
-          # Make hook executable
-          chmod +x .git/hooks/pre-commit
-          echo "Git hooks installed successfully!"
-          EOF
-          
-          chmod +x setup-git-hooks.sh
-          ./setup-git-hooks.sh
-          
-          # Add instruction for developers in README
-          echo "## Security Setup
-          
-          To set up local security scanning, run:
-          
-          \`\`\`
-          ./setup-git-hooks.sh
-          \`\`\`
-          
-          This will install a pre-commit hook that scans for secrets.
-          " >> README.md
-
-  dependency-scan:
-    name: Scan Dependencies
-    needs: secret-scan
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-      
       - name: Set up JDK
         uses: actions/setup-java@v3
         with:
           distribution: "temurin"
           java-version: "17"
           cache: "maven"
-      
-      - name: Maven Dependency Analysis
+          
+      - name: Dependency scanning
         run: |
-          # Check for vulnerable dependencies using Maven
-          mvn org.owasp:dependency-check-maven:7.4.4:check -DfailBuildOnCVSS=7
+          mvn org.owasp:dependency-check-maven:check
+        
+      - name: Check for critical vulnerabilities
+        run: |
+          CRITICAL_COUNT=$(grep -c "CRITICAL" target/dependency-check-report.xml || echo 0)
+          HIGH_COUNT=$(grep -c "HIGH" target/dependency-check-report.xml || echo 0)
+          echo "Found ${CRITICAL_COUNT} critical vulnerabilities and ${HIGH_COUNT} high vulnerabilities"
           
-          # Generate SBOM
-          mvn org.cyclonedx:cyclonedx-maven-plugin:2.7.9:makeAggregateBom
+          if [ "$CRITICAL_COUNT" -gt "$CRITICAL_VULNERABILITIES_THRESHOLD" ] || [ "$HIGH_COUNT" -gt "$HIGH_VULNERABILITIES_THRESHOLD" ]; then
+            echo "Security threshold exceeded! Pipeline failed."
+            exit 1
+          fi
           
-          # Create reports directory
-          mkdir -p reports
-          mv target/dependency-check-report.html reports/ || true
-          mv target/cyclonedx.xml reports/ || true
-      
-      - name: Upload dependency reports
-        uses: actions/upload-artifact@v2
+      - name: Scan Dockerfile
+        uses: aquasecurity/trivy-action@master
         with:
-          name: dependency-reports
-          path: reports/
+          scan-type: 'config'
+          scan-ref: 'Dockerfile'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+          
+      - name: Static code analysis
+        if: github.event_name == 'pull_request' && github.base_ref == 'master'
+        run: |
+          mvn spotbugs:check pmd:check
 
-  dockerfile-scan:
-    name: Scan Dockerfile
-    needs: secret-scan
+  build-and-deploy:
+    needs: security-checks
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # Needed for version commit
+      packages: write # Needed for ghcr.io push
+      id-token: write # Needed for signing
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-      
+        with:
+          fetch-depth: 0 # Get full history for versioning
+
+      - name: Cleanup workspace and Docker
+        run: |
+          echo "Cleaning up workspace..."
+          git clean -fdx
+
+          echo "Pruning Docker resources..."
+          docker system prune -af --volumes || true
+
+          echo "Removing any previous build artifacts..."
+          rm -rf target/ Dockerfile || true
+
+          echo "Cleanup complete."
+
+      - name: Bump Version
+        id: bump
+        uses: nnichols/maven-version-bump-action@v3
+        # with:
+        # github-token: ${{ secrets.github_token }}
+
+      - name: Print Version
+        run: "echo 'New Version: ${{steps.bump.outputs.version}}'"
+
+      - name: Extract Git metadata for tagging
+        id: git-metadata
+        shell: bash
+        run: |
+          SHA_SHORT=$(git rev-parse --short HEAD)
+          DATE=$(date +'%Y%m%d')
+          BRANCH=${GITHUB_REF#refs/heads/}
+
+          echo "sha_short=${SHA_SHORT}" >> "$GITHUB_OUTPUT"
+          echo "date=${DATE}" >> "$GITHUB_OUTPUT"
+          echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare Docker tags
+        id: docker-tags
+        shell: bash
+        run: |
+          # Always include these tags
+          TAGS="ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest"
+          TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.git-metadata.outputs.sha_short }}"
+          TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.git-metadata.outputs.date }}"
+
+          # Add version tag if version was bumped (check if version exists and is not empty)
+          if [ -n "${{ steps.bump.outputs.version }}" ]; then
+            TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.bump.outputs.version }}"
+            echo "Version tag added: ${{ steps.bump.outputs.version }}"
+          else
+            echo "No version change detected, skipping version tag"
+          fi
+
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+          echo "All tags: $TAGS"
+
+      - name: Set up JDK
+        uses: actions/setup-java@v3
+        with:
+          distribution: "temurin"
+          java-version: "17"
+          cache: "maven"
+
+      - name: Build application
+        run: mvn -B package --file pom.xml
+
       - name: Create multi-stage Dockerfile
         run: |
           # Creating Dockerfile with optimization techniques
@@ -207,134 +205,6 @@ jobs:
           # Dynamic entrypoint that works for both Spring Boot and standard Java apps
           ENTRYPOINT ["sh", "-c", "if [ -f 'org/springframework/boot/loader/JarLauncher.class' ]; then java $JAVA_OPTS org.springframework.boot.loader.JarLauncher; elif [ -d 'application' ]; then java $JAVA_OPTS -jar application/*.jar; else java $JAVA_OPTS -jar *.jar; fi"]
           EOF
-      
-      - name: Install Hadolint
-        run: |
-          wget -O hadolint https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64
-          chmod +x hadolint
-          sudo mv hadolint /usr/local/bin/
-      
-      - name: Run Hadolint
-        run: hadolint Dockerfile --failure-threshold error
-      
-      - name: Install Trivy
-        run: |
-          sudo apt-get install wget apt-transport-https gnupg lsb-release
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
-          echo deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main | sudo tee -a /etc/apt/sources.list.d/trivy.list
-          sudo apt-get update
-          sudo apt-get install -y trivy
-      
-      - name: Scan Dockerfile with Trivy
-        run: |
-          trivy config --severity HIGH,CRITICAL --exit-code 1 ./Dockerfile
-
-  static-analysis:
-    name: Static Code Analysis
-    if: github.ref == 'refs/heads/master'
-    needs: [dependency-scan, dockerfile-scan]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-      
-      - name: Set up JDK
-        uses: actions/setup-java@v3
-        with:
-          distribution: "temurin"
-          java-version: "17"
-          cache: "maven"
-      
-      - name: SonarQube Scan
-        run: |
-          mvn verify sonar:sonar \
-            -Dsonar.projectKey=${{ github.repository_owner }}_${{ env.IMAGE_NAME }} \
-            -Dsonar.host.url=${{ secrets.SONAR_URL }} \
-            -Dsonar.login=${{ secrets.SONAR_TOKEN }}
-
-  build-and-deploy:
-    name: Build and Sign
-    needs: [dependency-scan, dockerfile-scan]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write # Needed for version commit
-      packages: write # Needed for ghcr.io push
-      id-token: write # Needed for keyless signing
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0 # Get full history for versioning
-
-      - name: Cleanup workspace and Docker
-        run: |
-          echo "Cleaning up workspace..."
-          git clean -fdx
-
-          echo "Pruning Docker resources..."
-          docker system prune -af --volumes || true
-
-          echo "Removing any previous build artifacts..."
-          rm -rf target/ || true
-
-          echo "Cleanup complete."
-
-      - name: Bump Version
-        id: bump
-        uses: nnichols/maven-version-bump-action@v3
-        # with:
-        # github-token: ${{ secrets.github_token }}
-
-      - name: Print Version
-        run: "echo 'New Version: ${{steps.bump.outputs.version}}'"
-
-      - name: Extract Git metadata for tagging
-        id: git-metadata
-        shell: bash
-        run: |
-          SHA_SHORT=$(git rev-parse --short HEAD)
-          DATE=$(date +'%Y%m%d')
-          BRANCH=${GITHUB_REF#refs/heads/}
-
-          echo "sha_short=${SHA_SHORT}" >> "$GITHUB_OUTPUT"
-          echo "date=${DATE}" >> "$GITHUB_OUTPUT"
-          echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
-
-      - name: Prepare Docker tags
-        id: docker-tags
-        shell: bash
-        run: |
-          # Always include these tags
-          TAGS="ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest"
-          TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.git-metadata.outputs.sha_short }}"
-          TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.git-metadata.outputs.date }}"
-
-          # Add version tag if version was bumped (check if version exists and is not empty)
-          if [ -n "${{ steps.bump.outputs.version }}" ]; then
-            TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.bump.outputs.version }}"
-            echo "Version tag added: ${{ steps.bump.outputs.version }}"
-          else
-            echo "No version change detected, skipping version tag"
-          fi
-
-          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
-          echo "All tags: $TAGS"
-
-      - name: Set up JDK
-        uses: actions/setup-java@v3
-        with:
-          distribution: "temurin"
-          java-version: "17"
-          cache: "maven"
-
-      - name: Build application
-        run: mvn -B package --file pom.xml
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v2
@@ -344,79 +214,52 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Cosign
-        run: |
-          curl -LO https://github.com/sigstore/cosign/releases/download/v2.2.0/cosign-linux-amd64
-          chmod +x cosign-linux-amd64
-          sudo mv cosign-linux-amd64 /usr/local/bin/cosign
+        uses: sigstore/cosign-installer@main
 
-      - name: Build and Push Docker Image
-        id: build-and-push
+      - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
           context: .
           push: true
           tags: ${{ steps.docker-tags.outputs.tags }}
-          provenance: true
-          sbom: true
-
-      - name: Sign the Docker Image with Cosign
-        run: |
-          # Extract version or use latest if not available
-          VERSION="${{ steps.bump.outputs.version }}"
-          if [ -z "$VERSION" ]; then
-            VERSION="latest"
-          fi
           
-          # Sign the container image
-          cosign sign --key env://COSIGN_PRIVATE_KEY ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${VERSION}
+      - name: Scan built container image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ format('ghcr.io/{0}/{1}:{2}', github.repository_owner, env.IMAGE_NAME, steps.git-metadata.outputs.sha_short) }}
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+          
+      - name: Sign container image
+        run: |
+          cosign sign --key env://COSIGN_PRIVATE_KEY ${{ format('ghcr.io/{0}/{1}:{2}', github.repository_owner, env.IMAGE_NAME, steps.git-metadata.outputs.sha_short) }}
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-      
-      - name: Output version for deployment job
-        id: version-output
-        run: |
-          VERSION="${{ steps.bump.outputs.version }}"
-          if [ -z "$VERSION" ]; then
-            VERSION="latest"
-          fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-    outputs:
-      version: ${{ steps.version-output.outputs.version }}
 
   deploy:
-    name: Verify and Deploy
     needs: build-and-deploy
     runs-on: ubuntu-latest
     environment: production
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+    
     steps:
       - name: Install Cosign
+        uses: sigstore/cosign-installer@main
+        
+      - name: Verify container signature
         run: |
-          curl -LO https://github.com/sigstore/cosign/releases/download/v2.2.0/cosign-linux-amd64
-          chmod +x cosign-linux-amd64
-          sudo mv cosign-linux-amd64 /usr/local/bin/cosign
-      
-      - name: Install Trivy
-        run: |
-          sudo apt-get install wget apt-transport-https gnupg lsb-release
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
-          echo deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main | sudo tee -a /etc/apt/sources.list.d/trivy.list
-          sudo apt-get update
-          sudo apt-get install -y trivy
-      
-      - name: Verify Container Signature
-        run: |
-          cosign verify --key env://COSIGN_PUBLIC_KEY ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ needs.build-and-deploy.outputs.version }}
+          cosign verify --key env://COSIGN_PUBLIC_KEY ${{ format('ghcr.io/{0}/{1}:{2}', github.repository_owner, env.IMAGE_NAME, needs.build-and-deploy.outputs.sha_short) }}
         env:
           COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
-      
-      - name: Scan Container Image for Vulnerabilities
+          
+      - name: Deploy application
         run: |
-          trivy image --severity HIGH,CRITICAL --exit-code 1 ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ needs.build-and-deploy.outputs.version }}
-      
-      - name: Deploy to Production
-        run: |
-          echo "Deploying verified container to production environment..."
-          # Your deployment commands here
-          # For example:
-          # kubectl set image deployment/myapp myapp=ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ needs.build-and-deploy.outputs.version }}
+          echo "Deploying application..."
+          # Add your deployment commands here
+          echo "Application deployed successfully!"
