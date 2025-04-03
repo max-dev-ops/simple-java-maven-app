@@ -1,18 +1,17 @@
+# .github/workflows/ci-cd-pipeline.yml
+
 name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ master ] # Trigger on push to master (as per original)
+    branches: [ master ] # Trigger on push to master
   pull_request:
     branches: [ master ] # Also trigger on PRs targeting master for earlier checks
   workflow_dispatch: # Allow manual triggering
 
 env:
-  IMAGE_NAME: myapplication
-  REGISTRY: ghcr.io
-  # Define severity threshold for OWASP check (e.g., HIGH, CRITICAL)
-  # Set to MEDIUM to fail on medium or higher, HIGH to fail on high or critical, etc.
-  OWASP_FAIL_THRESHOLD: HIGH
+  IMAGE_NAME: myapplication # Replace with your application's image name
+  REGISTRY: ghcr.io       # Using GitHub Container Registry
 
 jobs:
   build-scan-sign-push:
@@ -23,14 +22,14 @@ jobs:
       contents: write
       # Needed for ghcr.io push
       packages: write
-      # Needed for CodeQL analysis
+      # Needed for CodeQL analysis results upload
       security-events: write
-      # Needed for OIDC token for keyless signing
+      # Needed for OIDC token for Cosign keyless signing
       id-token: write
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4 # Use latest checkout action
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0 # Get full history for versioning and analysis
 
@@ -41,7 +40,7 @@ jobs:
           echo "Pruning Docker resources..."
           docker system prune -af --volumes || true
           echo "Removing any previous build artifacts..."
-          rm -rf target/ Dockerfile || true # Dockerfile is now generated, so removing here is fine
+          rm -rf target/ Dockerfile || true
           echo "Cleanup complete."
 
       # --- Security Step: Secret Scanning ---
@@ -51,20 +50,17 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Optional: Fail pipeline if secrets are found (default is true)
           # GITLEAKS_FAIL: true
-          # Optional: Point to a custom Gitleaks config
-          # GITLEAKS_CONFIG: .gitleaks.toml
 
-      - name: Bump Version (if needed, commit happens here)
+      - name: Bump Version (Optional - Commits version change)
         id: bump
         uses: nnichols/maven-version-bump-action@v3
         # Requires contents: write permission
-        # Ensure your pom.xml is configured correctly for this action
 
-      - name: Print Version
-        run: "echo 'New Version: ${{steps.bump.outputs.version}}'"
+      - name: Print Version Info
+        run: "echo 'Version after potential bump: ${{steps.bump.outputs.version}}'"
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4 # Use latest setup-java action
+        uses: actions/setup-java@v4
         with:
           distribution: "temurin"
           java-version: "17"
@@ -74,27 +70,31 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
-          languages: java # Specify the language to analyze
-          # Optional: Add queries if needed
-          # queries: +security-extended, +security-and-quality
+          languages: java
 
-      # --- Security Step: Dependency Scan (SCA) integrated with build ---
-      - name: Build, Test, and Scan Dependencies
+      # --- Build Step ---
+      - name: Build and Test Application (Maven)
         run: |
-          # Run OWASP Dependency Check along with package. Fail build based on threshold.
-          # Ensure the plugin is configured in your pom.xml or configure via CLI args.
-          # This example assumes plugin is configured in pom.xml to fail on CVSS score >= 7.0 (HIGH)
-          # Adjust `-Dodc.failOnCVSS=7.0` or use OWASP_FAIL_THRESHOLD env var mapping if needed
-          # See OWASP Dependency-Check Maven plugin docs for configuration options
-          mvn -B verify org.owasp:dependency-check-maven:check -DfailOnCVSS=7.0 --file pom.xml
-          # If you prefer separate steps:
-          # 1. mvn -B package --file pom.xml -DskipTests # Build first
-          # 2. mvn org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=... # Then scan
+          # Runs tests and builds the package. Add -DskipTests if needed.
+          mvn -B verify --file pom.xml
+
+      # --- Security Step: Dependency Scan (SCA using Trivy) ---
+      - name: Scan project dependencies for vulnerabilities (Trivy)
+        uses: aquasecurity/trivy-action@master # Use specific version for stability e.g. @0.19.0
+        with:
+          scan-type: 'fs'         # Scan filesystem for config files (pom.xml)
+          scan-ref: '.'           # Scan current directory
+          vuln-type: 'library'    # Focus on programming language library vulnerabilities
+          severity: 'CRITICAL,HIGH' # Fail on CRITICAL or HIGH severity vulnerabilities
+          exit-code: '1'          # Fail the step if vulnerabilities are found
+          ignore-unfixed: true    # Ignore vulnerabilities without known fixes
+          format: 'table'         # Output format in logs
 
       # --- Security Step: Upload CodeQL Results ---
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
 
+      # --- Prepare Metadata and Tags ---
       - name: Extract Git metadata for tagging
         id: git-metadata
         shell: bash
@@ -102,54 +102,48 @@ jobs:
           SHA_SHORT=$(git rev-parse --short HEAD)
           DATE=$(date +'%Y%m%d')
           BRANCH=${GITHUB_REF#refs/heads/}
-          # Ensure version is captured even if bump step didn't run or change version
-          # Read version directly from pom.xml after potential bump
+          # Read version directly from pom.xml AFTER potential bump
           APP_VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
 
           echo "sha_short=${SHA_SHORT}" >> "$GITHUB_OUTPUT"
           echo "date=${DATE}" >> "$GITHUB_OUTPUT"
           echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
-          echo "app_version=${APP_VERSION}" >> "$GITHUB_OUTPUT" # Use version from pom
+          echo "app_version=${APP_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Prepare Docker tags
         id: docker-tags
         shell: bash
         run: |
           IMAGE_PATH="${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}"
-          # Always include these tags
           TAGS="${IMAGE_PATH}:latest"
           TAGS="$TAGS,${IMAGE_PATH}:${{ steps.git-metadata.outputs.sha_short }}"
           TAGS="$TAGS,${IMAGE_PATH}:${{ steps.git-metadata.outputs.date }}"
-
-          # Add version tag using the version read from pom.xml
           if [ -n "${{ steps.git-metadata.outputs.app_version }}" ]; then
             TAGS="$TAGS,${IMAGE_PATH}:${{ steps.git-metadata.outputs.app_version }}"
             echo "Version tag added: ${{ steps.git-metadata.outputs.app_version }}"
           else
             echo "Could not determine application version, skipping version tag"
           fi
-
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
-          echo "Image path: ${IMAGE_PATH}"
           echo "All tags to be built: $TAGS"
 
+      # --- Create and Lint Dockerfile ---
       - name: Create multi-stage Dockerfile dynamically
         id: create-dockerfile
         run: |
           echo "Creating dynamic Dockerfile..."
-          # Creating Dockerfile with optimization techniques
           cat > Dockerfile << 'EOF'
-          # Dockerfile content from your original workflow...
-          # Ensure GITHUB_REPOSITORY is correctly used or pass via build-arg if needed inside LABEL
-          # FROM maven:3.9... etc.
-          # ... (rest of your Dockerfile content) ...
-
+          # --- Build Stage ---
           FROM maven:3.9-amazoncorretto-17 AS build
           WORKDIR /app
+          # Cache Maven dependencies
           COPY pom.xml .
-          RUN mvn dependency:go-offline
+          RUN mvn dependency:go-offline -B
+          # Copy source code and build
           COPY src ./src
-          RUN mvn clean package -DskipTests
+          RUN mvn clean package -B -DskipTests
+
+          # Extract layers for Spring Boot or copy regular JAR
           RUN mkdir -p extracted && \
               if jar -tf target/*.jar | grep -q "BOOT-INF/layers.idx"; then \
                 echo "Spring Boot layered JAR detected, extracting layers..."; \
@@ -160,38 +154,51 @@ jobs:
                 cp target/*.jar extracted/application/; \
               fi
 
+          # --- Final Stage ---
           FROM eclipse-temurin:17-jre-alpine
           WORKDIR /app
-          LABEL org.opencontainers.image.source=https://github.com/${{ github.repository }}
-          LABEL org.opencontainers.image.description="Optimized Java application container"
-          LABEL org.opencontainers.image.revision=${{ github.sha }}
-          LABEL org.opencontainers.image.version=${{ steps.git-metadata.outputs.app_version }}
 
+          # Add metadata labels
+          LABEL org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          LABEL org.opencontainers.image.description="Optimized Java application container for ${{ env.IMAGE_NAME }}"
+          LABEL org.opencontainers.image.revision=${{ github.sha }}
+          LABEL org.opencontainers.image.version=${{ steps.git-metadata.outputs.app_version }} # Set at build time
+
+          # Create non-root user
           RUN addgroup --system javauser && adduser --system --ingroup javauser javauser
+
+          # Copy extracted application/layers
           COPY --from=build --chown=javauser:javauser /app/extracted/ ./
+
+          # Set permissions and user
           RUN chmod -R u=rX,g=rX /app
           USER javauser
+
+          # Java runtime options
           ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
           EXPOSE 8080
+
+          # Dynamic entrypoint for Spring Boot or standard JAR
           ENTRYPOINT ["sh", "-c", "if [ -f 'org/springframework/boot/loader/JarLauncher.class' ]; then java $JAVA_OPTS org.springframework.boot.loader.JarLauncher; elif [ -d 'application' ]; then java $JAVA_OPTS -jar application/*.jar; else java $JAVA_OPTS -jar *.jar; fi"]
           EOF
 
           echo "Dockerfile created."
-          cat Dockerfile # Optional: print the generated Dockerfile
+          # cat Dockerfile # Uncomment to print Dockerfile in logs
 
       # --- Security Step: Scan Dockerfile ---
       - name: Lint Dockerfile (Hadolint)
         uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: ./Dockerfile
-          # Optional: fail pipeline on errors/warnings
-          # failure-threshold: warning # error, warning, info, style, ignore, none
+          # Optional: Set failure threshold (e.g., error, warning)
+          # failure-threshold: error
 
+      # --- Build, Sign, and Push Docker Image ---
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3 # Use latest login action
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -199,49 +206,60 @@ jobs:
 
       - name: Build Docker image and extract metadata
         id: build-image
-        uses: docker/build-push-action@v5 # Use latest build-push action
+        uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
-          push: false # Don't push yet, we need to sign it first
+          push: false # Build but DO NOT push yet (signing comes next)
           tags: ${{ steps.docker-tags.outputs.tags }}
-          labels: | # Add OCI labels
+          # Add OCI labels using build-time args or direct labels
+          labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.created=${{ fromJson(steps.build-image.outputs.metadata).image.created }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ steps.git-metadata.outputs.app_version }}
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true # Output canonical name with digest
+          # Output image metadata for signing
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true
 
       # --- Security Step: Sign Container Image ---
       - name: Install Cosign
-        uses: sigstore/cosign-installer@v3.4.0 # Use latest cosign installer
+        uses: sigstore/cosign-installer@v3.4.0
 
       - name: Sign the container image with Cosign (Keyless)
         # Requires id-token: write permission
         run: |
-          echo "Signing image: ${{ steps.build-image.outputs.imageid }}"
+          echo "Signing image: ${{ steps.build-image.outputs.imageid }} with digest ${{ steps.build-image.outputs.digest }}"
+          # The COSIGN_EXPERIMENTAL=1 is generally needed for keyless
           cosign sign --yes ${{ steps.build-image.outputs.imageid }}@${{ steps.build-image.outputs.digest }}
         env:
-          COSIGN_EXPERIMENTAL: 1 # Needed for keyless signing (may become default later)
+          COSIGN_EXPERIMENTAL: 1
 
       # --- Push Signed Image ---
-      - name: Push Signed Docker image
-        # The image was already built, now just push the signed manifest
+      - name: Push Signed Docker image with all tags
         run: |
-          echo "Pushing image: ${{ steps.build-image.outputs.imageid }} with digest ${{ steps.build-image.outputs.digest }}"
-          # Push all the tags associated with the signed digest
+          IMAGE_ID="${{ steps.build-image.outputs.imageid }}"
+          DIGEST="${{ steps.build-image.outputs.digest }}"
+          echo "Pushing image: ${IMAGE_ID} with digest ${DIGEST}"
+
+          # Push the manifest list/image by digest first (important!)
+          docker push "${IMAGE_ID}@${DIGEST}"
+
+          # Then push all the tags associated with that digest
           TAG_LIST=$(echo "${{ steps.docker-tags.outputs.tags }}" | tr ',' '\n')
-          for TAG in $TAG_LIST; do
-            echo "Pushing tag: $TAG"
-            docker push "$TAG"
+          IMAGE_BASE_NAME=$(echo "$IMAGE_ID" | sed 's/:.*//') # Extract base image name
+
+          for TAG_SUFFIX in $(echo "$TAG_LIST" | sed "s|${IMAGE_BASE_NAME}:||"); do
+            TAG_TO_PUSH="${IMAGE_BASE_NAME}:${TAG_SUFFIX}"
+            echo "Pushing tag: ${TAG_TO_PUSH}"
+            docker push "${TAG_TO_PUSH}"
           done
 
-      # --- Security Step: Container Verification (Conceptual) ---
-      # In a separate Continuous Deployment (CD) workflow/job:
-      # 1. Pull the image *by digest* from the registry:
+      # --- Security Step: Container Verification (Placeholder for CD) ---
+      # In a separate Continuous Deployment (CD) workflow/job, you would:
+      # 1. Identify the exact image digest to deploy (e.g., from this job's output or registry).
+      # 2. Pull the image *by digest*:
       #    docker pull ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}@${{ steps.build-image.outputs.digest }}
-      # 2. Verify the image signature using Cosign:
-      #    cosign verify --key <your-public-key-or-oidc-issuer> ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}@${{ steps.build-image.outputs.digest }}
-      # 3. Optionally, run a container vulnerability scan on the pulled image (e.g., Trivy, Grype)
+      # 3. Verify the image signature using Cosign (keyless requires experimental flag):
+      #    COSIGN_EXPERIMENTAL=1 cosign verify --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity-regexp 'https://github.com/${{ github.repository_owner }}/.*' ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}@${{ steps.build-image.outputs.digest }}
+      # 4. Optionally, run a final container vulnerability scan on the pulled image:
       #    trivy image ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}@${{ steps.build-image.outputs.digest }} --severity CRITICAL,HIGH --exit-code 1
-      # 4. If verification and scanning pass, proceed with deployment.
+      # 5. If verification and scanning pass, proceed with deployment to your environment.
