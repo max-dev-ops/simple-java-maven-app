@@ -55,41 +55,19 @@ jobs:
           java-version: "17"
           cache: "maven"
           
-      - name: Dependency scanning
+      - name: Setup Snyk
+        uses: snyk/actions/setup@master
+          
+      - name: Snyk Maven dependency scan
+        run: snyk test --all-projects --severity-threshold=high
         env:
-          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
-        run: |
-          # Create OWASP dependency check settings with NVD API key
-          mkdir -p ~/.m2
-          cat > ~/.m2/settings.xml << EOF
-          <settings>
-            <profiles>
-              <profile>
-                <id>owasp-dependency-check</id>
-                <activation>
-                  <activeByDefault>true</activeByDefault>
-                </activation>
-                <properties>
-                  <nvd.api.key>${NVD_API_KEY}</nvd.api.key>
-                </properties>
-              </profile>
-            </profiles>
-          </settings>
-          EOF
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        continue-on-error: false  # Fail the build if vulnerabilities are found
           
-          echo "Running OWASP dependency check with NVD API key..."
-          mvn org.owasp:dependency-check-maven:check -Dformat=XML
-        
-      - name: Check for critical vulnerabilities
-        run: |
-          CRITICAL_COUNT=$(grep -c "CRITICAL" target/dependency-check-report.xml || echo 0)
-          HIGH_COUNT=$(grep -c "HIGH" target/dependency-check-report.xml || echo 0)
-          echo "Found ${CRITICAL_COUNT} critical vulnerabilities and ${HIGH_COUNT} high vulnerabilities"
-          
-          if [ "$CRITICAL_COUNT" -gt "$CRITICAL_VULNERABILITIES_THRESHOLD" ] || [ "$HIGH_COUNT" -gt "$HIGH_VULNERABILITIES_THRESHOLD" ]; then
-            echo "Security threshold exceeded! Pipeline failed."
-            exit 1
-          fi
+      - name: Snyk Maven monitor
+        run: snyk monitor --all-projects
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
           
       - name: Scan Dockerfile
         uses: aquasecurity/trivy-action@master
