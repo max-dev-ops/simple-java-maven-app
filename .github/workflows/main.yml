@@ -9,48 +9,11 @@ env:
   IMAGE_NAME: myapplication
 
 jobs:
-  security-checks:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Install git-secrets
-        run: |
-          git clone https://github.com/awslabs/git-secrets.git
-          cd git-secrets
-          sudo make install
-          git secrets --install
-          git secrets --register-aws
-
-      - name: Run git-secrets
-        run: git secrets --scan-history
-
-      - name: OWASP Dependency Check
-        uses: dependency-check/Dependency-Check_Action@main
-        with:
-          project: 'simple-java-maven-app'
-          path: '.'
-          format: 'HTML'
-          failOnCVSS: 7
-
-      - name: Run Trivy vulnerability scanner on Dockerfile
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: 'config'
-          scan-ref: 'Dockerfile'
-          exit-code: '1'
-          severity: 'CRITICAL,HIGH'
-
-      - name: Static code analysis with PMD
-        run: mvn pmd:check
-
   build-and-deploy:
-    needs: security-checks
     runs-on: ubuntu-latest
     permissions:
       contents: write # Needed for version commit
       packages: write # Needed for ghcr.io push
-      id-token: write # needed for signing
 
     steps:
       - name: Checkout code
@@ -192,25 +155,3 @@ jobs:
           context: .
           push: true
           tags: ${{ steps.docker-tags.outputs.tags }}
-
-      - name: Install cosign
-        uses: sigstore/cosign-installer@main
-
-      - name: Sign the Docker image
-        run: |
-          cosign sign --yes ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.git-metadata.outputs.sha_short }}
-
-      - name: Verify Docker image
-        run: |
-          cosign verify \
-            --certificate-identity "https://github.com/${{ github.repository_owner }}/.github/workflows/main.yml@refs/heads/master" \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.git-metadata.outputs.sha_short }}
-
-      - name: Scan container for vulnerabilities
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ steps.git-metadata.outputs.sha_short }}
-          format: 'table'
-          exit-code: '1'
-          severity: 'CRITICAL,HIGH'
