@@ -45,7 +45,8 @@ jobs:
         run: |
           wget https://github.com/pmd/pmd/releases/download/pmd_releases%2F6.55.0/pmd-bin-6.55.0.zip
           unzip pmd-bin-6.55.0.zip
-          ./pmd-bin-6.55.0/bin/pmd check -d src/main/java -R rulesets/java/quickstart.xml -f text
+          chmod +x pmd-bin-6.55.0/bin/pmd
+          ./pmd-bin-6.55.0/bin/run.sh pmd -d src/main/java -R rulesets/java/quickstart.xml -f text
 
   build-and-deploy:
     needs: security-checks
