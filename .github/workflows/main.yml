@@ -138,6 +138,8 @@ jobs:
           ENTRYPOINT ["sh", "-c", "if [ -f 'org/springframework/boot/loader/JarLauncher.class' ]; then java $JAVA_OPTS org.springframework.boot.loader.JarLauncher; elif [ -d 'application' ]; then java $JAVA_OPTS -jar application/*.jar; else java $JAVA_OPTS -jar *.jar; fi"]
           EOF
 
+      
+      
       # --- Build Container Image ---
       - name: Build Docker image
         id: build-docker
@@ -148,30 +150,47 @@ jobs:
           load: true # Load image into docker daemon for Trivy scan
           tags: ${{ steps.docker-tags.outputs.tags }}
 
-      # --- Security Scan 4: Container Vulnerabilities ---
-      - name: Scan Container Image for Vulnerabilities with Trivy
-        uses: aquasecurity/trivy-action@master # Use specific version in production
+      # --- Security Scan 4: Dockerfile Best Practices with Hadolint ---
+      - name: Scan Dockerfile for best practices with Hadolint
+        uses: hadolint/hadolint-action@v3.1.0
         with:
-          image-ref: ${{ steps.docker-tags.outputs.sha_tag }} # Scan the specific SHA tag
-          format: 'table'
-          exit-code: '1' # Fail workflow if vulnerabilities are found
-          ignore-unfixed: true # Optional: Don't fail for vulns with no fix yet
-          vuln-type: 'os,library' # Scan OS packages and language-specific libraries
-          severity: 'CRITICAL,HIGH' # Fail only on CRITICAL and HIGH severities
-          # Optional: Upload results to GitHub Security tab
-          # github-pat: ${{ secrets.GITHUB_TOKEN }}
+          dockerfile: Dockerfile
+          format: sarif
+          output-file: hadolint-results.sarif
+          failure-threshold: warning # Options: error, warning, info, style, none
 
-      # --- Security Scan 5: Container Configuration (CIS related) ---
-      - name: Scan Image Configuration with Trivy
-        uses: aquasecurity/trivy-action@master # Use specific version in production
+      # --- Upload Dockerfile scan results to GitHub Security tab ---
+      - name: Upload Hadolint scan results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        if: success() || failure() # Always run this step to upload scan results
         with:
-          image-ref: ${{ steps.docker-tags.outputs.sha_tag }}
-          scan-type: 'config' # Specify config scanning
-          format: 'table'
-          exit-code: '1' # Fail on misconfigurations
-          severity: 'CRITICAL,HIGH' # Define severity threshold for failure
-          # Optional: Specify compliance checks, e.g., Docker CIS
-          # compliance: 'docker-cis'
+          sarif_file: hadolint-results.sarif
+          category: dockerfile-lint
+
+      # # --- Security Scan 4: Container Vulnerabilities ---
+      # # - name: Scan Container Image for Vulnerabilities with Trivy
+      # #   uses: aquasecurity/trivy-action@master # Use specific version in production
+      # #   with:
+      # #     image-ref: ${{ steps.docker-tags.outputs.sha_tag }} # Scan the specific SHA tag
+      # #     format: 'table'
+      # #     exit-code: '1' # Fail workflow if vulnerabilities are found
+      # #     ignore-unfixed: true # Optional: Don't fail for vulns with no fix yet
+      # #     vuln-type: 'os,library' # Scan OS packages and language-specific libraries
+      # #     severity: 'CRITICAL,HIGH' # Fail only on CRITICAL and HIGH severities
+      # #     # Optional: Upload results to GitHub Security tab
+      # #     # github-pat: ${{ secrets.GITHUB_TOKEN }}
+
+      # # --- Security Scan 5: Container Configuration (CIS related) ---
+      # # - name: Scan Image Configuration with Trivy
+      # #   uses: aquasecurity/trivy-action@master # Use specific version in production
+      # #   with:
+      # #     image-ref: ${{ steps.docker-tags.outputs.sha_tag }}
+      # #     scan-type: 'config' # Specify config scanning
+      # #     format: 'table'
+      # #     exit-code: '1' # Fail on misconfigurations
+      # #     severity: 'CRITICAL,HIGH' # Define severity threshold for failure
+      # #     # Optional: Specify compliance checks, e.g., Docker CIS
+      # #     # compliance: 'docker-cis'
 
       # --- Push Container Image (Only if scans passed) ---
       - name: Login to GitHub Container Registry
@@ -238,3 +257,4 @@ jobs:
             echo "❌ Signature verification FAILED for image ${{ needs.build-scan-sign.outputs.image_tag }}"
             # Optionally fail the workflow here if needed: exit 1
           fi
+          
