@@ -109,6 +109,8 @@ jobs:
         run: |
           cat > Dockerfile << 'EOF'
           FROM maven:3.9-amazoncorretto-17 AS build
+          # Intentionally insecure practice - running as root
+          USER root
           WORKDIR /app
           COPY pom.xml .
           RUN mvn dependency:go-offline
