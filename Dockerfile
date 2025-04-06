@@ -1,8 +1,8 @@
 FROM maven:3.9-amazoncorretto-17 AS build
           # Intentionally insecure practice - running as root
-          USER root
+        #   USER root
           # Intentional vulnerability - hardcoded credentials
-          ENV DB_PASSWORD=supersecretpassword
+        #   ENV DB_PASSWORD=supersecretpassword
           WORKDIR /app
           COPY pom.xml .
           RUN mvn dependency:go-offline
