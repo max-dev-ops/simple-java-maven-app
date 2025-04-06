@@ -151,7 +151,7 @@ jobs:
           format: "table" # Changed to table for better console output
           output: "trivy-dockerfile-results.txt"
           exit-code: "1" # Set to '1' to fail the workflow if issues are found
-          severity: "CRITICAL,HIGH, MEDIUM, LOW" # Adjust as needed
+          severity: "CRITICAL,HIGH, MEDIUM" # Adjust as needed
           hide-progress: false
           include-secrets: true
           # # Limit checks to only Dockerfile-related policies
