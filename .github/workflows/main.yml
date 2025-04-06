@@ -137,8 +137,48 @@ jobs:
           EXPOSE 8080
           ENTRYPOINT ["sh", "-c", "if [ -f 'org/springframework/boot/loader/JarLauncher.class' ]; then java $JAVA_OPTS org.springframework.boot.loader.JarLauncher; elif [ -d 'application' ]; then java $JAVA_OPTS -jar application/*.jar; else java $JAVA_OPTS -jar *.jar; fi"]
           EOF
-
       
+      # --- Security Scan 4: Dockerfile Analysis with Trivy (MOVED BEFORE IMAGE BUILD) ---
+      - name: Scan Dockerfile with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: './Dockerfile'
+          format: 'table'  # Changed to table for better console output
+          output: 'trivy-dockerfile-results.txt'
+          exit-code: '1'  # Set to '1' to fail the workflow if issues are found
+          severity: 'CRITICAL,HIGH'
+
+      # --- Display Dockerfile scan results in console ---
+      - name: Display Dockerfile Scan Results
+        if: always()  # Run even if the previous step failed
+        run: |
+          echo "======= Dockerfile Scan Results ======="
+          if [ -f "trivy-dockerfile-results.txt" ]; then
+            cat trivy-dockerfile-results.txt
+          else
+            echo "No results file found"
+          fi
+          echo "======================================"
+
+      # --- Generate SARIF format for GitHub Security ---
+      - name: Scan Dockerfile with Trivy (SARIF format)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: './Dockerfile'
+          format: 'sarif'
+          output: 'trivy-dockerfile-results.sarif'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+
+      # --- Upload Dockerfile scan results to GitHub Security tab ---
+      - name: Upload Trivy Dockerfile scan results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: success() || failure() # Always run this step to upload scan results
+        with:
+          sarif_file: trivy-dockerfile-results.sarif
+          category: dockerfile-security
       
       # --- Build Container Image ---
       - name: Build Docker image
@@ -149,50 +189,6 @@ jobs:
           push: false # Build locally first for scanning
           load: true # Load image into docker daemon for Trivy scan
           tags: ${{ steps.docker-tags.outputs.tags }}
-
-      # --- Security Scan 4: Dockerfile Analysis with Trivy ---
-      - name: Scan Dockerfile with Trivy
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: 'config'
-          scan-ref: './Dockerfile'
-          format: 'sarif'
-          output: 'trivy-dockerfile-results.sarif'
-          exit-code: '0'  # Set to '1' to fail the workflow if issues are found
-          severity: 'CRITICAL,HIGH'
-
-      # --- Upload Dockerfile scan results to GitHub Security tab ---
-      - name: Upload Trivy Dockerfile scan results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
-        if: success() || failure() # Always run this step to upload scan results
-        with:
-          sarif_file: trivy-dockerfile-results.sarif
-          category: dockerfile-security
-
-      # # --- Security Scan 4: Container Vulnerabilities ---
-      # # - name: Scan Container Image for Vulnerabilities with Trivy
-      # #   uses: aquasecurity/trivy-action@master # Use specific version in production
-      # #   with:
-      # #     image-ref: ${{ steps.docker-tags.outputs.sha_tag }} # Scan the specific SHA tag
-      # #     format: 'table'
-      # #     exit-code: '1' # Fail workflow if vulnerabilities are found
-      # #     ignore-unfixed: true # Optional: Don't fail for vulns with no fix yet
-      # #     vuln-type: 'os,library' # Scan OS packages and language-specific libraries
-      # #     severity: 'CRITICAL,HIGH' # Fail only on CRITICAL and HIGH severities
-      # #     # Optional: Upload results to GitHub Security tab
-      # #     # github-pat: ${{ secrets.GITHUB_TOKEN }}
-
-      # # --- Security Scan 5: Container Configuration (CIS related) ---
-      # # - name: Scan Image Configuration with Trivy
-      # #   uses: aquasecurity/trivy-action@master # Use specific version in production
-      # #   with:
-      # #     image-ref: ${{ steps.docker-tags.outputs.sha_tag }}
-      # #     scan-type: 'config' # Specify config scanning
-      # #     format: 'table'
-      # #     exit-code: '1' # Fail on misconfigurations
-      # #     severity: 'CRITICAL,HIGH' # Define severity threshold for failure
-      # #     # Optional: Specify compliance checks, e.g., Docker CIS
-      # #     # compliance: 'docker-cis'
 
       # --- Push Container Image (Only if scans passed) ---
       - name: Login to GitHub Container Registry
