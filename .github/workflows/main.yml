@@ -185,12 +185,12 @@ jobs:
       #     skip-dirs: "aws,kubernetes,cloud,devsecops,k8s"
 
       # --- Upload Dockerfile scan results to GitHub Security tab ---
-      - name: Upload Trivy Dockerfile scan results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
-        if: success() || failure() # Always run this step to upload scan results
-        with:
-          sarif_file: trivy-dockerfile-results.sarif
-          category: dockerfile-security
+      # - name: Upload Trivy Dockerfile scan results to GitHub Security
+      #   uses: github/codeql-action/upload-sarif@v3
+      #   if: success() || failure() # Always run this step to upload scan results
+      #   with:
+      #     sarif_file: trivy-dockerfile-results.sarif
+      #     category: dockerfile-security
       
       # --- Build Container Image ---
       - name: Build Docker image
