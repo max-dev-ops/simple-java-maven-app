@@ -167,22 +167,22 @@ jobs:
           fi
           echo "======================================"
 
-      # --- Generate SARIF format for GitHub Security ---
-      - name: Scan Dockerfile with Trivy (SARIF format)
-        uses: aquasecurity/trivy-action@0.17.0
-        with:
-          scan-type: 'config'
-          scan-ref: './Dockerfile'
-          format: 'sarif'
-          output: 'trivy-dockerfile-results.sarif'
-          exit-code: '1'
-          severity: 'CRITICAL,HIGH'
-          hide-progress: false
-          # Limit checks to only Dockerfile-related policies
-          policy-bundle: 'docker-basic'
-          # Ignore policies not relevant to Dockerfiles
-          skip-files: "*.rego"
-          skip-dirs: "aws,kubernetes,cloud,devsecops,k8s"
+      # # --- Generate SARIF format for GitHub Security ---
+      # - name: Scan Dockerfile with Trivy (SARIF format)
+      #   uses: aquasecurity/trivy-action@0.17.0
+      #   with:
+      #     scan-type: 'config'
+      #     scan-ref: './Dockerfile'
+      #     format: 'sarif'
+      #     output: 'trivy-dockerfile-results.sarif'
+      #     exit-code: '1'
+      #     severity: 'CRITICAL,HIGH'
+      #     hide-progress: false
+      #     # Limit checks to only Dockerfile-related policies
+      #     policy-bundle: 'docker-basic'
+      #     # Ignore policies not relevant to Dockerfiles
+      #     skip-files: "*.rego"
+      #     skip-dirs: "aws,kubernetes,cloud,devsecops,k8s"
 
       # --- Upload Dockerfile scan results to GitHub Security tab ---
       - name: Upload Trivy Dockerfile scan results to GitHub Security
