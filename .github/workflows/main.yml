@@ -140,7 +140,7 @@ jobs:
       
       # --- Security Scan 4: Dockerfile Analysis with Trivy (MOVED BEFORE IMAGE BUILD) ---
       - name: Scan Dockerfile with Trivy
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.17.0
         with:
           scan-type: 'config'
           scan-ref: './Dockerfile'
@@ -148,6 +148,12 @@ jobs:
           output: 'trivy-dockerfile-results.txt'
           exit-code: '1'  # Set to '1' to fail the workflow if issues are found
           severity: 'CRITICAL,HIGH'
+          hide-progress: false
+          # Limit checks to only Dockerfile-related policies
+          policy-bundle: 'docker-basic'
+          # Ignore policies not relevant to Dockerfiles
+          skip-files: "*.rego"
+          skip-dirs: "aws,kubernetes,cloud,devsecops,k8s"
 
       # --- Display Dockerfile scan results in console ---
       - name: Display Dockerfile Scan Results
@@ -163,7 +169,7 @@ jobs:
 
       # --- Generate SARIF format for GitHub Security ---
       - name: Scan Dockerfile with Trivy (SARIF format)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.17.0
         with:
           scan-type: 'config'
           scan-ref: './Dockerfile'
@@ -171,6 +177,12 @@ jobs:
           output: 'trivy-dockerfile-results.sarif'
           exit-code: '1'
           severity: 'CRITICAL,HIGH'
+          hide-progress: false
+          # Limit checks to only Dockerfile-related policies
+          policy-bundle: 'docker-basic'
+          # Ignore policies not relevant to Dockerfiles
+          skip-files: "*.rego"
+          skip-dirs: "aws,kubernetes,cloud,devsecops,k8s"
 
       # --- Upload Dockerfile scan results to GitHub Security tab ---
       - name: Upload Trivy Dockerfile scan results to GitHub Security
