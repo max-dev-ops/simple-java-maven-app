@@ -98,7 +98,24 @@ jobs:
         run: mvn -B verify --file pom.xml
         # This runs tests and plugins bound to the 'verify' phase.
         # Configure POM to fail build on critical findings if desired.
-
+      - name: Run static tests
+        run: mvn checkstyle:check --file pom.xml
+        # This runs Checkstyle and fails the build if issues are found.
+        # Configure POM to fail build on critical findings if desired.
+      # - name: Run SpotBugs
+      #   run: mvn spotbugs:check --file pom.xml
+        # This runs SpotBugs and fails the build if issues are found.
+        # Configure POM to fail build on critical findings if desired.
+      # - name: Run OWASP Dependency Check
+      #   run: mvn org.owasp:dependency-check-maven:check --file pom.xml
+        # This runs OWASP Dependency Check and fails the build if issues are found.
+        # Configure POM to fail build on critical findings if desired.
+      # - name: Run OWASP Dependency Check (SARIF format)
+      #   run: mvn org.owasp:dependency-check-maven:check --file pom.xml -Dformat=ALL
+        # This runs OWASP Dependency Check and fails the build if issues are found.
+        # Configure POM to fail build on critical findings if desired.
+        # This runs unit tests and plugins bound to the 'test' phase.
+        # Configure POM to fail build on critical findings if desired.
       # --- Build Application ---
       # Run package separately IF verify doesn't produce the needed artifact, otherwise verify might be enough
       - name: Build Application JAR
