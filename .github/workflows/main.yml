@@ -141,18 +141,19 @@ jobs:
           EXPOSE 8080
           ENTRYPOINT ["sh", "-c", "if [ -f 'org/springframework/boot/loader/JarLauncher.class' ]; then java $JAVA_OPTS org.springframework.boot.loader.JarLauncher; elif [ -d 'application' ]; then java $JAVA_OPTS -jar application/*.jar; else java $JAVA_OPTS -jar *.jar; fi"]
           EOF
-      
+
       # --- Security Scan 4: Dockerfile ---
       - name: Scan Dockerfile with Trivy
         uses: aquasecurity/trivy-action@0.17.0
         with:
-          scan-type: 'config'
-          scan-ref: './Dockerfile'
-          format: 'table'  # Changed to table for better console output
-          output: 'trivy-dockerfile-results.txt'
-          exit-code: '1'  # Set to '1' to fail the workflow if issues are found
-          severity: 'CRITICAL,HIGH'
+          scan-type: "config"
+          scan-ref: "./Dockerfile"
+          format: "table" # Changed to table for better console output
+          output: "trivy-dockerfile-results.txt"
+          exit-code: "1" # Set to '1' to fail the workflow if issues are found
+          severity: "CRITICAL,HIGH"
           hide-progress: false
+          include-secrets: true
           # # Limit checks to only Dockerfile-related policies
           # policy-bundle: 'docker-basic'
           # # Ignore policies not relevant to Dockerfiles
@@ -161,7 +162,7 @@ jobs:
 
       # --- Display Dockerfile scan results in console ---
       - name: Display Dockerfile Scan Results
-        if: always()  # Run even if the previous step failed
+        if: always() # Run even if the previous step failed
         run: |
           echo "======= Dockerfile Scan Results ======="
           if [ -f "trivy-dockerfile-results.txt" ]; then
@@ -203,7 +204,7 @@ jobs:
       #   with:
       #     sarif_file: trivy-dockerfile-results.sarif
       #     category: dockerfile-security
-      
+
       # --- Build Container Image ---
       - name: Build Docker image
         id: build-docker
