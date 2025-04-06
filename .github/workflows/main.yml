@@ -142,7 +142,7 @@ jobs:
           ENTRYPOINT ["sh", "-c", "if [ -f 'org/springframework/boot/loader/JarLauncher.class' ]; then java $JAVA_OPTS org.springframework.boot.loader.JarLauncher; elif [ -d 'application' ]; then java $JAVA_OPTS -jar application/*.jar; else java $JAVA_OPTS -jar *.jar; fi"]
           EOF
       
-      # --- Security Scan 4: Dockerfile Analysis with Trivy (MOVED BEFORE IMAGE BUILD) ---
+      # --- Security Scan 4: Dockerfile ---
       - name: Scan Dockerfile with Trivy
         uses: aquasecurity/trivy-action@0.17.0
         with:
@@ -170,7 +170,15 @@ jobs:
             echo "No results file found"
           fi
           echo "======================================"
-
+      # Add this step after the Trivy scan
+      - name: Check Trivy Results
+        run: |
+          if grep -q "Total: [1-9]" trivy-dockerfile-results.txt; then
+            echo "❌ Security issues found in Dockerfile!"
+            exit 1
+          else
+            echo "✅ No security issues found in Dockerfile"
+          fi
       # # --- Generate SARIF format for GitHub Security ---
       # - name: Scan Dockerfile with Trivy (SARIF format)
       #   uses: aquasecurity/trivy-action@0.17.0
